@@ -14,6 +14,10 @@ int main(void) {
   audio_config.payload_type = MEZON_DEFAULT_AUDIO_PAYLOAD_TYPE;
   audio_config.jitter_target_ms = 60;
   audio_config.jitter_max_ms = 120;
+  audio_config.adaptation.enabled = 1;
+  audio_config.adaptation.min_bitrate_bps = 16000;
+  audio_config.adaptation.initial_bitrate_bps = 24000;
+  audio_config.adaptation.max_bitrate_bps = 48000;
   video_config.payload_type = MEZON_DEFAULT_VIDEO_PAYLOAD_TYPE;
   audio = mezon_audio_create(&audio_config);
   video = mezon_video_create(&video_config);

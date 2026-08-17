@@ -1,5 +1,9 @@
 #include "mezia/media.h"
+#include "audio_feedback.h"
+#include "audio_internal.h"
+#include "mezia_internal.h"
 
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -9,6 +13,8 @@ struct mezia_ctx {
   mezon_video_ctx_t *video;
   uint8_t audio_payload_type;
   uint8_t video_payload_type;
+  uint8_t control_payload_type;
+  atomic_uint control_seq;
   mezon_packet_t audio_packet;
   uint8_t *audio_storage;
   size_t mtu;
@@ -17,7 +23,14 @@ struct mezia_ctx {
 
 static void media_packet(const mezon_packet_t *packet, void *user_data) {
   mezia_ctx_t *ctx = (mezia_ctx_t *)user_data;
-  if (ctx->audio && packet->payload_type == ctx->audio_payload_type) {
+  if (ctx->audio && packet->payload_type == ctx->control_payload_type) {
+    mezon_audio_feedback_t feedback;
+    if (mezon_audio_feedback_parse(packet->data, packet->len, &feedback) ==
+        MEZON_OK) {
+      mezon_audio_submit_receiver_report(ctx->audio, &feedback,
+                                         packet->arrival_time_ns);
+    }
+  } else if (ctx->audio && packet->payload_type == ctx->audio_payload_type) {
     mezon_audio_receive(ctx->audio, packet);
   } else if (ctx->video && packet->payload_type == ctx->video_payload_type) {
     mezon_video_receive(ctx->video, packet);
@@ -27,7 +40,24 @@ static void media_packet(const mezon_packet_t *packet, void *user_data) {
 mezia_ctx_t *mezia_create(const mezia_config_t *config) {
   mezia_ctx_t *ctx;
   mezon_peer_config_t peer_config;
+  uint8_t audio_pt;
+  uint8_t video_pt;
+  uint8_t control_pt;
   if (!config) {
+    return NULL;
+  }
+  audio_pt = config->audio && config->audio->payload_type
+                 ? config->audio->payload_type
+                 : MEZON_DEFAULT_AUDIO_PAYLOAD_TYPE;
+  video_pt = config->video && config->video->payload_type
+                 ? config->video->payload_type
+                 : MEZON_DEFAULT_VIDEO_PAYLOAD_TYPE;
+  control_pt = config->control_payload_type
+                   ? config->control_payload_type
+                   : MEZON_DEFAULT_CONTROL_PAYLOAD_TYPE;
+  if ((config->audio && config->video && audio_pt == video_pt) ||
+      (config->audio && config->audio->adaptation.enabled &&
+       (control_pt == audio_pt || (config->video && control_pt == video_pt)))) {
     return NULL;
   }
   ctx = (mezia_ctx_t *)calloc(1, sizeof(*ctx));
@@ -35,6 +65,8 @@ mezia_ctx_t *mezia_create(const mezia_config_t *config) {
     return NULL;
   }
   ctx->mtu = config->peer.mtu ? config->peer.mtu : MEZON_DEFAULT_MTU;
+  ctx->control_payload_type = control_pt;
+  atomic_init(&ctx->control_seq, 0U);
   if ((config->audio && config->audio->mtu &&
        config->audio->mtu != ctx->mtu) ||
       (config->video && config->video->mtu &&
@@ -48,9 +80,7 @@ mezia_ctx_t *mezia_create(const mezia_config_t *config) {
       mezia_destroy(ctx);
       return NULL;
     }
-    ctx->audio_payload_type = config->audio->payload_type
-                                  ? config->audio->payload_type
-                                  : MEZON_DEFAULT_AUDIO_PAYLOAD_TYPE;
+    ctx->audio_payload_type = audio_pt;
     ctx->audio_storage = (uint8_t *)malloc(ctx->mtu);
     if (!ctx->audio_storage) {
       mezia_destroy(ctx);
@@ -65,9 +95,7 @@ mezia_ctx_t *mezia_create(const mezia_config_t *config) {
       mezia_destroy(ctx);
       return NULL;
     }
-    ctx->video_payload_type = config->video->payload_type
-                                  ? config->video->payload_type
-                                  : MEZON_DEFAULT_VIDEO_PAYLOAD_TYPE;
+    ctx->video_payload_type = video_pt;
   }
   peer_config = config->peer;
   peer_config.on_packet = media_packet;
@@ -130,6 +158,29 @@ static mezon_status_t send_packets(mezia_ctx_t *ctx, mezon_packet_t *packets,
   return MEZON_OK;
 }
 
+static void maybe_send_audio_feedback(mezia_ctx_t *ctx, uint64_t now_ns) {
+  mezon_audio_feedback_t feedback;
+  mezon_packet_t packet;
+  uint8_t payload[MEZON_AUDIO_FEEDBACK_SIZE];
+  if (!ctx || !ctx->audio || !ctx->running ||
+      !mezon_audio_adaptation_enabled(ctx->audio) ||
+      !mezon_audio_take_receiver_report(ctx->audio, now_ns, &feedback) ||
+      mezon_audio_feedback_serialize(&feedback, payload, sizeof(payload)) !=
+          MEZON_OK) {
+    return;
+  }
+  memset(&packet, 0, sizeof(packet));
+  packet.data = payload;
+  packet.len = sizeof(payload);
+  packet.capacity = sizeof(payload);
+  packet.payload_type = ctx->control_payload_type;
+  packet.seq = (uint16_t)atomic_fetch_add(&ctx->control_seq, 1U);
+  packet.ssrc = mezon_audio_local_ssrc(ctx->audio) ^ 0x4d455a49U;
+  if (mezon_peer_send(ctx->peer, &packet) == MEZON_OK) {
+    mezon_audio_note_report_sent(ctx->audio);
+  }
+}
+
 mezon_status_t mezia_send_audio(mezia_ctx_t *ctx, const int16_t *pcm,
                                 size_t samples_per_channel) {
   size_t count = 1U;
@@ -143,14 +194,19 @@ mezon_status_t mezia_send_audio(mezia_ctx_t *ctx, const int16_t *pcm,
   if (status != MEZON_OK) {
     return status;
   }
-  return mezon_peer_send(ctx->peer, &ctx->audio_packet);
+  status = mezon_peer_send(ctx->peer, &ctx->audio_packet);
+  maybe_send_audio_feedback(ctx, mezon_clock_now_ns());
+  return status;
 }
 
 mezon_status_t mezia_playout_audio(mezia_ctx_t *ctx, uint64_t now_ns) {
+  mezon_status_t status;
   if (!ctx || !ctx->audio) {
     return MEZON_ERR_NOT_READY;
   }
-  return mezon_audio_playout(ctx->audio, now_ns);
+  status = mezon_audio_playout(ctx->audio, now_ns);
+  maybe_send_audio_feedback(ctx, now_ns);
+  return status;
 }
 
 mezon_status_t mezia_send_h264(mezia_ctx_t *ctx, const uint8_t *nal,
@@ -211,4 +267,17 @@ void mezia_get_stats(const mezia_ctx_t *ctx, mezon_stats_t *stats) {
   stats->audio_frames_dropped = audio_stats.audio_frames_dropped;
   stats->audio_jitter_resets = audio_stats.audio_jitter_resets;
   stats->audio_jitter_underruns = audio_stats.audio_jitter_underruns;
+  stats->audio_adaptation_reports_sent =
+      audio_stats.audio_adaptation_reports_sent;
+  stats->audio_adaptation_reports_received =
+      audio_stats.audio_adaptation_reports_received;
+  stats->audio_adaptation_reports_rejected =
+      audio_stats.audio_adaptation_reports_rejected;
+  stats->audio_adaptation_stale_events =
+      audio_stats.audio_adaptation_stale_events;
+  stats->audio_bitrate_increases = audio_stats.audio_bitrate_increases;
+  stats->audio_bitrate_decreases = audio_stats.audio_bitrate_decreases;
+  stats->audio_current_bitrate_bps = audio_stats.audio_current_bitrate_bps;
+  stats->audio_current_packet_loss_percent =
+      audio_stats.audio_current_packet_loss_percent;
 }

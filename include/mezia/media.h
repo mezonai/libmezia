@@ -15,6 +15,7 @@ typedef struct {
   mezon_peer_config_t peer;
   const mezon_audio_config_t *audio;
   const mezon_video_config_t *video;
+  uint8_t control_payload_type;
 } mezia_config_t;
 
 mezia_ctx_t *mezia_create(const mezia_config_t *config);

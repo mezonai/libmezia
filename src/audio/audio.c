@@ -1,5 +1,6 @@
 #include "mezia/audio.h"
 #include "audio_internal.h"
+#include "mezia_internal.h"
 
 #include <stdatomic.h>
 #include <stdlib.h>
@@ -10,6 +11,23 @@ struct mezon_audio_ctx {
   mezon_opus_codec_t *codec;
   mezon_audio_jitter_t jitter;
   atomic_flag jitter_lock;
+  atomic_flag feedback_lock;
+  mezon_bitrate_controller_t controller;
+  mezon_audio_feedback_t pending_feedback;
+  uint64_t pending_feedback_time_ns;
+  uint64_t last_feedback_time_ns;
+  uint64_t report_started_ns;
+  uint64_t report_seen_mask;
+  uint32_t report_ssrc;
+  uint16_t report_base_seq;
+  uint16_t report_highest_seq;
+  uint16_t next_report_seq;
+  uint16_t last_feedback_seq;
+  int adaptation_enabled;
+  int feedback_pending;
+  int have_feedback_seq;
+  int stale_backoff_applied;
+  int report_initialized;
   uint16_t next_seq;
   uint32_t next_timestamp;
   int sender_silent;
@@ -29,12 +47,67 @@ static void unlock_audio(mezon_audio_ctx_t *ctx) {
   atomic_flag_clear_explicit(&ctx->jitter_lock, memory_order_release);
 }
 
+static void lock_feedback(mezon_audio_ctx_t *ctx) {
+  while (atomic_flag_test_and_set_explicit(&ctx->feedback_lock,
+                                            memory_order_acquire)) {
+  }
+}
+
+static void unlock_feedback(mezon_audio_ctx_t *ctx) {
+  atomic_flag_clear_explicit(&ctx->feedback_lock, memory_order_release);
+}
+
+static void apply_pending_feedback(mezon_audio_ctx_t *ctx) {
+  mezon_audio_feedback_t feedback;
+  mezon_bitrate_decision_t decision;
+  int pending = 0;
+  if (!ctx->adaptation_enabled) {
+    return;
+  }
+  lock_feedback(ctx);
+  if (ctx->feedback_pending) {
+    feedback = ctx->pending_feedback;
+    ctx->feedback_pending = 0;
+    pending = 1;
+  }
+  unlock_feedback(ctx);
+  if (!pending) {
+    uint64_t now_ns = mezon_clock_now_ns();
+    uint64_t timeout_ns =
+        (uint64_t)ctx->config.adaptation.feedback_timeout_ms * 1000000ULL;
+    if (!ctx->have_feedback_seq || ctx->stale_backoff_applied ||
+        now_ns < ctx->last_feedback_time_ns ||
+        now_ns - ctx->last_feedback_time_ns <= timeout_ns) {
+      return;
+    }
+    feedback.expected = 100U;
+    feedback.received = 90U;
+    ctx->stale_backoff_applied = 1;
+    ctx->stats.audio_adaptation_stale_events++;
+  } else {
+    ctx->stale_backoff_applied = 0;
+  }
+  decision = mezon_bitrate_controller_update(&ctx->controller,
+                                              feedback.expected,
+                                              feedback.received);
+  if (mezon_opus_set_network_state(ctx->codec, decision.bitrate,
+                                   decision.loss_percent) == MEZON_OK) {
+    ctx->stats.audio_current_bitrate_bps = decision.bitrate;
+    ctx->stats.audio_current_packet_loss_percent = decision.loss_percent;
+    ctx->stats.audio_bitrate_increases += (uint64_t)decision.increased;
+    ctx->stats.audio_bitrate_decreases += (uint64_t)decision.decreased;
+  }
+}
+
 mezon_audio_ctx_t *mezon_audio_create(const mezon_audio_config_t *config) {
   mezon_audio_ctx_t *ctx;
   size_t target_frames;
   size_t max_frames;
   uint16_t target_ms;
   uint16_t max_ms;
+  uint32_t min_bitrate = 16000U;
+  uint32_t initial_bitrate = MEZON_OPUS_BITRATE;
+  uint32_t max_bitrate = 48000U;
   if (!config || config->payload_type > 127U ||
       (config->mtu && config->mtu <= MEZON_RTP_HEADER_SIZE + 2U)) {
     return NULL;
@@ -45,6 +118,21 @@ mezon_audio_ctx_t *mezon_audio_create(const mezon_audio_config_t *config) {
       target_ms % MEZON_OPUS_FRAME_MS != 0 ||
       max_ms % MEZON_OPUS_FRAME_MS != 0) {
     return NULL;
+  }
+  if (config->adaptation.enabled) {
+    min_bitrate = config->adaptation.min_bitrate_bps
+                      ? config->adaptation.min_bitrate_bps
+                      : 16000U;
+    initial_bitrate = config->adaptation.initial_bitrate_bps
+                          ? config->adaptation.initial_bitrate_bps
+                          : MEZON_OPUS_BITRATE;
+    max_bitrate = config->adaptation.max_bitrate_bps
+                      ? config->adaptation.max_bitrate_bps
+                      : 48000U;
+    if (min_bitrate < 16000U || max_bitrate > 48000U ||
+        min_bitrate > initial_bitrate || initial_bitrate > max_bitrate) {
+      return NULL;
+    }
   }
   ctx = (mezon_audio_ctx_t *)calloc(1, sizeof(*ctx));
   if (!ctx) {
@@ -57,12 +145,35 @@ mezon_audio_ctx_t *mezon_audio_create(const mezon_audio_config_t *config) {
                                  : MEZON_DEFAULT_AUDIO_PAYLOAD_TYPE;
   ctx->config.jitter_target_ms = target_ms;
   ctx->config.jitter_max_ms = max_ms;
-  ctx->codec = mezon_opus_create();
+  ctx->config.adaptation.min_bitrate_bps = min_bitrate;
+  ctx->config.adaptation.initial_bitrate_bps = initial_bitrate;
+  ctx->config.adaptation.max_bitrate_bps = max_bitrate;
+  if (!ctx->config.adaptation.report_interval_ms) {
+    ctx->config.adaptation.report_interval_ms = 1000U;
+  }
+  if (!ctx->config.adaptation.feedback_timeout_ms) {
+    ctx->config.adaptation.feedback_timeout_ms = 3000U;
+  }
+  if (ctx->config.adaptation.enabled &&
+      (ctx->config.adaptation.report_interval_ms < 200U ||
+       ctx->config.adaptation.feedback_timeout_ms <
+           ctx->config.adaptation.report_interval_ms * 2U)) {
+    free(ctx);
+    return NULL;
+  }
+  ctx->codec = mezon_opus_create(initial_bitrate);
   if (!ctx->codec) {
     free(ctx);
     return NULL;
   }
   atomic_flag_clear(&ctx->jitter_lock);
+  atomic_flag_clear(&ctx->feedback_lock);
+  ctx->adaptation_enabled = config->adaptation.enabled;
+  mezon_bitrate_controller_init(&ctx->controller, min_bitrate, initial_bitrate,
+                                 max_bitrate);
+  ctx->stats.audio_current_bitrate_bps = initial_bitrate;
+  ctx->stats.audio_current_packet_loss_percent =
+      MEZON_OPUS_EXPECTED_LOSS_PERCENT;
   target_frames = target_ms / MEZON_OPUS_FRAME_MS;
   max_frames = max_ms / MEZON_OPUS_FRAME_MS;
   mezon_audio_jitter_init(&ctx->jitter, target_frames, max_frames);
@@ -101,6 +212,7 @@ mezon_status_t mezon_audio_packetize(mezon_audio_ctx_t *ctx,
     *packet_count = 1U;
     return MEZON_ERR_BUFFER_TOO_SMALL;
   }
+  apply_pending_feedback(ctx);
   max_payload = ctx->config.mtu - MEZON_RTP_HEADER_SIZE;
   if (max_payload > MEZON_OPUS_MAX_PACKET_SIZE) {
     max_payload = MEZON_OPUS_MAX_PACKET_SIZE;
@@ -132,6 +244,30 @@ mezon_status_t mezon_audio_packetize(mezon_audio_ctx_t *ctx,
   return MEZON_OK;
 }
 
+static void track_receiver_packet(mezon_audio_ctx_t *ctx,
+                                  const mezon_packet_t *packet) {
+  uint16_t distance;
+  if (!ctx->adaptation_enabled) {
+    return;
+  }
+  if (!ctx->report_initialized || packet->ssrc != ctx->report_ssrc) {
+    ctx->report_ssrc = packet->ssrc;
+    ctx->report_base_seq = packet->seq;
+    ctx->report_highest_seq = packet->seq;
+    ctx->report_seen_mask = 1U;
+    ctx->report_started_ns = packet->arrival_time_ns;
+    ctx->report_initialized = 1;
+    return;
+  }
+  distance = (uint16_t)(packet->seq - ctx->report_base_seq);
+  if (distance < 64U) {
+    ctx->report_seen_mask |= 1ULL << distance;
+    if (mezon_seq_before(ctx->report_highest_seq, packet->seq)) {
+      ctx->report_highest_seq = packet->seq;
+    }
+  }
+}
+
 mezon_status_t mezon_audio_receive(mezon_audio_ctx_t *ctx,
                                    const mezon_packet_t *packet) {
   mezon_status_t status;
@@ -139,6 +275,7 @@ mezon_status_t mezon_audio_receive(mezon_audio_ctx_t *ctx,
     return MEZON_ERR_INVALID_ARG;
   }
   lock_audio(ctx);
+  track_receiver_packet(ctx, packet);
   status = mezon_audio_jitter_insert(&ctx->jitter, packet, &ctx->stats);
   if (status == MEZON_OK) {
     ctx->stats.packets_received++;
@@ -215,6 +352,80 @@ mezon_status_t mezon_audio_playout(mezon_audio_ctx_t *ctx, uint64_t now_ns) {
                          timestamp, discontinuity, ctx->config.user_data);
   }
   return MEZON_OK;
+}
+
+static uint32_t count_bits(uint64_t value) {
+  uint32_t count = 0;
+  while (value) {
+    count += (uint32_t)(value & 1U);
+    value >>= 1;
+  }
+  return count;
+}
+
+int mezon_audio_take_receiver_report(mezon_audio_ctx_t *ctx, uint64_t now_ns,
+                                     mezon_audio_feedback_t *feedback) {
+  uint64_t interval_ns;
+  if (!ctx || !feedback || !ctx->adaptation_enabled) {
+    return 0;
+  }
+  interval_ns =
+      (uint64_t)ctx->config.adaptation.report_interval_ms * 1000000ULL;
+  lock_audio(ctx);
+  if (!ctx->report_initialized || now_ns < ctx->report_started_ns ||
+      now_ns - ctx->report_started_ns < interval_ns) {
+    unlock_audio(ctx);
+    return 0;
+  }
+  feedback->report_seq = ctx->next_report_seq++;
+  feedback->media_ssrc = ctx->report_ssrc;
+  feedback->expected =
+      (uint16_t)(ctx->report_highest_seq - ctx->report_base_seq) + 1U;
+  feedback->received = count_bits(ctx->report_seen_mask);
+  ctx->report_initialized = 0;
+  ctx->report_seen_mask = 0;
+  unlock_audio(ctx);
+  return feedback->expected != 0;
+}
+
+mezon_status_t mezon_audio_submit_receiver_report(
+    mezon_audio_ctx_t *ctx, const mezon_audio_feedback_t *feedback,
+    uint64_t arrival_time_ns) {
+  if (!ctx || !feedback || !ctx->adaptation_enabled || !feedback->expected ||
+      feedback->received > feedback->expected ||
+      feedback->media_ssrc != ctx->config.ssrc) {
+    return MEZON_ERR_INVALID_ARG;
+  }
+  lock_feedback(ctx);
+  if (ctx->have_feedback_seq &&
+      !mezon_seq_before(ctx->last_feedback_seq, feedback->report_seq)) {
+    unlock_feedback(ctx);
+    ctx->stats.audio_adaptation_reports_rejected++;
+    return MEZON_ERR_STATE;
+  }
+  ctx->pending_feedback = *feedback;
+  ctx->pending_feedback_time_ns = arrival_time_ns;
+  ctx->last_feedback_time_ns = arrival_time_ns;
+  ctx->last_feedback_seq = feedback->report_seq;
+  ctx->have_feedback_seq = 1;
+  ctx->feedback_pending = 1;
+  unlock_feedback(ctx);
+  ctx->stats.audio_adaptation_reports_received++;
+  return MEZON_OK;
+}
+
+uint32_t mezon_audio_local_ssrc(const mezon_audio_ctx_t *ctx) {
+  return ctx ? ctx->config.ssrc : 0;
+}
+
+int mezon_audio_adaptation_enabled(const mezon_audio_ctx_t *ctx) {
+  return ctx && ctx->adaptation_enabled;
+}
+
+void mezon_audio_note_report_sent(mezon_audio_ctx_t *ctx) {
+  if (ctx) {
+    ctx->stats.audio_adaptation_reports_sent++;
+  }
 }
 
 void mezon_audio_get_stats(const mezon_audio_ctx_t *ctx, mezon_stats_t *stats) {

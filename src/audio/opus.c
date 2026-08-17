@@ -6,6 +6,8 @@
 struct mezon_opus_codec {
   OpusEncoder *encoder;
   OpusDecoder *decoder;
+  uint32_t bitrate;
+  uint8_t loss_percent;
 };
 
 static mezon_status_t map_opus_error(int error) {
@@ -21,8 +23,8 @@ static mezon_status_t map_opus_error(int error) {
   return MEZON_ERR_CODEC;
 }
 
-static int configure_encoder(OpusEncoder *encoder) {
-  return opus_encoder_ctl(encoder, OPUS_SET_BITRATE(MEZON_OPUS_BITRATE)) ==
+static int configure_encoder(OpusEncoder *encoder, uint32_t bitrate) {
+  return opus_encoder_ctl(encoder, OPUS_SET_BITRATE((opus_int32)bitrate)) ==
              OPUS_OK &&
          opus_encoder_ctl(encoder, OPUS_SET_VBR(1)) == OPUS_OK &&
          opus_encoder_ctl(encoder, OPUS_SET_VBR_CONSTRAINT(1)) == OPUS_OK &&
@@ -38,7 +40,7 @@ static int configure_encoder(OpusEncoder *encoder) {
          opus_encoder_ctl(encoder, OPUS_SET_LSB_DEPTH(16)) == OPUS_OK;
 }
 
-mezon_opus_codec_t *mezon_opus_create(void) {
+mezon_opus_codec_t *mezon_opus_create(uint32_t initial_bitrate) {
   mezon_opus_codec_t *codec;
   int error = OPUS_OK;
   codec = (mezon_opus_codec_t *)calloc(1, sizeof(*codec));
@@ -49,7 +51,7 @@ mezon_opus_codec_t *mezon_opus_create(void) {
                                        MEZON_OPUS_CHANNELS,
                                        OPUS_APPLICATION_VOIP, &error);
   if (!codec->encoder || error != OPUS_OK ||
-      !configure_encoder(codec->encoder)) {
+      !configure_encoder(codec->encoder, initial_bitrate)) {
     mezon_opus_destroy(codec);
     return NULL;
   }
@@ -59,6 +61,8 @@ mezon_opus_codec_t *mezon_opus_create(void) {
     mezon_opus_destroy(codec);
     return NULL;
   }
+  codec->bitrate = initial_bitrate;
+  codec->loss_percent = MEZON_OPUS_EXPECTED_LOSS_PERCENT;
   return codec;
 }
 
@@ -73,6 +77,30 @@ void mezon_opus_destroy(mezon_opus_codec_t *codec) {
     opus_decoder_destroy(codec->decoder);
   }
   free(codec);
+}
+
+mezon_status_t mezon_opus_set_network_state(mezon_opus_codec_t *codec,
+                                             uint32_t bitrate,
+                                             uint8_t loss_percent) {
+  uint32_t old_bitrate;
+  if (!codec || bitrate < 6000U || bitrate > 510000U || loss_percent > 100U) {
+    return MEZON_ERR_INVALID_ARG;
+  }
+  old_bitrate = codec->bitrate;
+  if (opus_encoder_ctl(codec->encoder,
+                       OPUS_SET_BITRATE((opus_int32)bitrate)) != OPUS_OK) {
+    return MEZON_ERR_CODEC;
+  }
+  if (opus_encoder_ctl(codec->encoder,
+                       OPUS_SET_PACKET_LOSS_PERC((int)loss_percent)) !=
+      OPUS_OK) {
+    opus_encoder_ctl(codec->encoder,
+                     OPUS_SET_BITRATE((opus_int32)old_bitrate));
+    return MEZON_ERR_CODEC;
+  }
+  codec->bitrate = bitrate;
+  codec->loss_percent = loss_percent;
+  return MEZON_OK;
 }
 
 mezon_status_t mezon_opus_encode(mezon_opus_codec_t *codec,

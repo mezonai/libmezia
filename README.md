@@ -86,6 +86,22 @@ layer:
 | RTP clock | 48 kHz |
 | Default RTP payload type | 96 |
 | Default jitter target / maximum | 60 ms / 120 ms |
+| Adaptive bitrate range | 16–48 kbit/s |
+| Feedback report / timeout | 1000 ms / 3000 ms |
+
+When `audio.adaptation.enabled` is set, each receiver sends a compact versioned
+report over the same bidirectional UDP socket using control payload type 98.
+The sender reduces bitrate quickly when interval loss rises and increases by
+2 kbit/s only after three clean reports. It also updates Opus's expected packet
+loss setting for FEC. Feedback is consumed and Opus controls are applied only
+at the next encode-frame boundary; the UDP receive worker never reconfigures
+the encoder. Payload types 96, 97, and 98 must not collide and both peers must
+agree on them.
+
+This is loss-driven Opus adaptation, not full congestion control. It does not
+estimate RTT, queue delay, or total path capacity. When H.264 shares the same
+path, lowering audio by tens of kbit/s cannot compensate for an excessive
+multi-megabit video rate; applications must cap video separately.
 
 `mezia_send_audio()` accepts exactly 960 PCM samples and emits one Opus RTP
 packet synchronously. The audio capture thread should call it every 20 ms.

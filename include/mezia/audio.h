@@ -17,11 +17,21 @@ typedef void (*mezon_audio_callback_t)(const int16_t *pcm,
                                        void *user_data);
 
 typedef struct {
+  int enabled;
+  uint32_t min_bitrate_bps;
+  uint32_t initial_bitrate_bps;
+  uint32_t max_bitrate_bps;
+  uint16_t report_interval_ms;
+  uint16_t feedback_timeout_ms;
+} mezon_audio_adaptation_config_t;
+
+typedef struct {
   uint8_t payload_type;
   uint32_t ssrc;
   size_t mtu;
   uint16_t jitter_target_ms;
   uint16_t jitter_max_ms;
+  mezon_audio_adaptation_config_t adaptation;
   mezon_audio_callback_t on_audio;
   void *user_data;
 } mezon_audio_config_t;

@@ -13,6 +13,7 @@ extern "C" {
 #define MEZON_MAX_DATAGRAM_SIZE 1500U
 #define MEZON_DEFAULT_AUDIO_PAYLOAD_TYPE 96U
 #define MEZON_DEFAULT_VIDEO_PAYLOAD_TYPE 97U
+#define MEZON_DEFAULT_CONTROL_PAYLOAD_TYPE 98U
 
 #define MEZON_OPUS_SAMPLE_RATE 48000U
 #define MEZON_OPUS_CHANNELS 1U
@@ -73,6 +74,14 @@ typedef struct {
   uint64_t audio_frames_dropped;
   uint64_t audio_jitter_resets;
   uint64_t audio_jitter_underruns;
+  uint64_t audio_adaptation_reports_sent;
+  uint64_t audio_adaptation_reports_received;
+  uint64_t audio_adaptation_reports_rejected;
+  uint64_t audio_adaptation_stale_events;
+  uint64_t audio_bitrate_increases;
+  uint64_t audio_bitrate_decreases;
+  uint32_t audio_current_bitrate_bps;
+  uint8_t audio_current_packet_loss_percent;
 } mezon_stats_t;
 
 #ifdef __cplusplus

@@ -58,6 +58,7 @@ add_library(mezia STATIC
     src/audio/audio.c
     src/audio/opus.c
     src/audio/jitter.c
+    src/audio/bitrate_controller.c
 
     src/video/video.c
     src/video/h264.c
@@ -65,6 +66,7 @@ add_library(mezia STATIC
     src/video/jitter.c
 
     src/transport/packet.c
+    src/transport/audio_feedback.c
 
     src/p2p/p2p.c
 )
@@ -76,6 +78,7 @@ target_include_directories(mezia
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src/internal
         ${CMAKE_CURRENT_SOURCE_DIR}/src/audio
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/transport
 )
 target_link_libraries(mezia
     PUBLIC ${MEZON_OPUS_TARGET}
@@ -132,6 +135,22 @@ if(BUILD_TESTING)
     add_executable(test_audio tests/test_audio.c)
     target_link_libraries(test_audio PRIVATE mezia)
     add_test(NAME audio COMMAND test_audio)
+
+    add_executable(test_bitrate_controller tests/test_bitrate_controller.c)
+    target_include_directories(test_bitrate_controller PRIVATE src/audio)
+    target_link_libraries(test_bitrate_controller PRIVATE mezia)
+    add_test(NAME bitrate_controller COMMAND test_bitrate_controller)
+
+    add_executable(test_audio_feedback tests/test_audio_feedback.c)
+    target_include_directories(test_audio_feedback PRIVATE src/transport)
+    target_link_libraries(test_audio_feedback PRIVATE mezia)
+    add_test(NAME audio_feedback COMMAND test_audio_feedback)
+
+    add_executable(test_adaptive_audio_link tests/test_adaptive_audio_link.c)
+    target_include_directories(test_adaptive_audio_link PRIVATE
+        src/audio src/transport src/internal)
+    target_link_libraries(test_adaptive_audio_link PRIVATE mezia)
+    add_test(NAME adaptive_audio_link COMMAND test_adaptive_audio_link)
 
     add_executable(test_video tests/test_video.c)
     target_link_libraries(test_video PRIVATE mezia)

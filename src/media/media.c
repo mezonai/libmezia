@@ -9,6 +9,8 @@ struct mezia_ctx {
   mezon_video_ctx_t *video;
   uint8_t audio_payload_type;
   uint8_t video_payload_type;
+  mezon_packet_t audio_packet;
+  uint8_t *audio_storage;
   size_t mtu;
   int running;
 };
@@ -49,6 +51,13 @@ mezia_ctx_t *mezia_create(const mezia_config_t *config) {
     ctx->audio_payload_type = config->audio->payload_type
                                   ? config->audio->payload_type
                                   : MEZON_DEFAULT_AUDIO_PAYLOAD_TYPE;
+    ctx->audio_storage = (uint8_t *)malloc(ctx->mtu);
+    if (!ctx->audio_storage) {
+      mezia_destroy(ctx);
+      return NULL;
+    }
+    ctx->audio_packet.data = ctx->audio_storage;
+    ctx->audio_packet.capacity = ctx->mtu;
   }
   if (config->video) {
     ctx->video = mezon_video_create(config->video);
@@ -79,6 +88,7 @@ void mezia_destroy(mezia_ctx_t *ctx) {
   mezon_peer_destroy(ctx->peer);
   mezon_audio_destroy(ctx->audio);
   mezon_video_destroy(ctx->video);
+  free(ctx->audio_storage);
   free(ctx);
 }
 
@@ -122,38 +132,25 @@ static mezon_status_t send_packets(mezia_ctx_t *ctx, mezon_packet_t *packets,
 
 mezon_status_t mezia_send_audio(mezia_ctx_t *ctx, const int16_t *pcm,
                                 size_t samples_per_channel) {
-  mezon_packet_t *packets;
-  uint8_t *storage;
-  size_t count;
-  size_t i;
+  size_t count = 1U;
   mezon_status_t status;
   if (!ctx || !ctx->audio || !ctx->running) {
     return MEZON_ERR_NOT_READY;
   }
-  count = mezon_audio_max_packets(ctx->audio, samples_per_channel);
-  if (!count || count > SIZE_MAX / sizeof(*packets) ||
-      count > SIZE_MAX / ctx->mtu) {
-    return MEZON_ERR_INVALID_ARG;
+  ctx->audio_packet.len = 0;
+  status = mezon_audio_packetize(ctx->audio, pcm, samples_per_channel,
+                                 &ctx->audio_packet, 1U, &count);
+  if (status != MEZON_OK) {
+    return status;
   }
-  packets = (mezon_packet_t *)calloc(count, sizeof(*packets));
-  storage = (uint8_t *)malloc(count * ctx->mtu);
-  if (!packets || !storage) {
-    free(packets);
-    free(storage);
-    return MEZON_ERR_NOMEM;
+  return mezon_peer_send(ctx->peer, &ctx->audio_packet);
+}
+
+mezon_status_t mezia_playout_audio(mezia_ctx_t *ctx, uint64_t now_ns) {
+  if (!ctx || !ctx->audio) {
+    return MEZON_ERR_NOT_READY;
   }
-  for (i = 0; i < count; ++i) {
-    packets[i].data = storage + i * ctx->mtu;
-    packets[i].capacity = ctx->mtu;
-  }
-  status = mezon_audio_packetize(ctx->audio, pcm, samples_per_channel, packets,
-                                 count, &count);
-  if (status == MEZON_OK) {
-    status = send_packets(ctx, packets, count);
-  }
-  free(storage);
-  free(packets);
-  return status;
+  return mezon_audio_playout(ctx->audio, now_ns);
 }
 
 mezon_status_t mezia_send_h264(mezia_ctx_t *ctx, const uint8_t *nal,
@@ -194,8 +191,24 @@ mezon_status_t mezia_send_h264(mezia_ctx_t *ctx, const uint8_t *nal,
 }
 
 void mezia_get_stats(const mezia_ctx_t *ctx, mezon_stats_t *stats) {
+  mezon_stats_t audio_stats;
   if (!ctx || !stats) {
     return;
   }
   mezon_peer_get_stats(ctx->peer, stats);
+  if (!ctx->audio) {
+    return;
+  }
+  memset(&audio_stats, 0, sizeof(audio_stats));
+  mezon_audio_get_stats(ctx->audio, &audio_stats);
+  stats->sequence_gaps += audio_stats.sequence_gaps;
+  stats->duplicate_packets += audio_stats.duplicate_packets;
+  stats->late_packets += audio_stats.late_packets;
+  stats->audio_frames_encoded = audio_stats.audio_frames_encoded;
+  stats->audio_frames_decoded = audio_stats.audio_frames_decoded;
+  stats->audio_frames_fec_recovered = audio_stats.audio_frames_fec_recovered;
+  stats->audio_frames_plc = audio_stats.audio_frames_plc;
+  stats->audio_frames_dropped = audio_stats.audio_frames_dropped;
+  stats->audio_jitter_resets = audio_stats.audio_jitter_resets;
+  stats->audio_jitter_underruns = audio_stats.audio_jitter_underruns;
 }

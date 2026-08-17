@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(mezon_mezia VERSION 0.1.0 LANGUAGES C CXX)
+project(mezon_mezia VERSION 0.2.0 LANGUAGES C CXX)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -20,11 +20,43 @@ endif()
 
 find_package(Threads REQUIRED)
 
+if(NOT TARGET Opus::opus AND NOT TARGET opus)
+    find_package(Opus CONFIG QUIET)
+endif()
+
+if(TARGET Opus::opus)
+    set(MEZON_OPUS_TARGET Opus::opus)
+elseif(TARGET opus)
+    set(MEZON_OPUS_TARGET opus)
+else()
+    find_package(PkgConfig QUIET)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(OPUS QUIET IMPORTED_TARGET opus)
+    endif()
+    if(TARGET PkgConfig::OPUS)
+        set(MEZON_OPUS_TARGET PkgConfig::OPUS)
+    else()
+        find_path(OPUS_INCLUDE_DIR NAMES opus/opus.h)
+        find_library(OPUS_LIBRARY NAMES opus)
+        if(NOT OPUS_INCLUDE_DIR OR NOT OPUS_LIBRARY)
+            message(FATAL_ERROR
+                "libopus is required. Install libopus-dev/opus-devel or provide OPUS_INCLUDE_DIR and OPUS_LIBRARY.")
+        endif()
+        add_library(mezon_opus UNKNOWN IMPORTED)
+        set_target_properties(mezon_opus PROPERTIES
+            IMPORTED_LOCATION "${OPUS_LIBRARY}"
+            INTERFACE_INCLUDE_DIRECTORIES "${OPUS_INCLUDE_DIR}")
+        set(MEZON_OPUS_TARGET mezon_opus)
+    endif()
+endif()
+message(STATUS "libmezia Opus target: ${MEZON_OPUS_TARGET}")
+
 add_library(mezia STATIC
     src/media/media.c
     src/media/clock.c
 
     src/audio/audio.c
+    src/audio/opus.c
     src/audio/jitter.c
 
     src/video/video.c
@@ -32,9 +64,7 @@ add_library(mezia STATIC
     src/video/packetizer.c
     src/video/jitter.c
 
-    src/transport/udp.c
     src/transport/packet.c
-    src/transport/transport.c
 
     src/p2p/p2p.c
 )
@@ -45,8 +75,12 @@ target_include_directories(mezia
         $<INSTALL_INTERFACE:include>
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src/internal
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/audio
 )
-target_link_libraries(mezia PRIVATE Threads::Threads)
+target_link_libraries(mezia
+    PUBLIC ${MEZON_OPUS_TARGET}
+    PRIVATE Threads::Threads
+)
 
 if(WIN32)
     target_link_libraries(mezia PUBLIC ws2_32)

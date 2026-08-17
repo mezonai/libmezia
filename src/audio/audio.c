@@ -1,26 +1,49 @@
 #include "mezia/audio.h"
-#include "mezia_internal.h"
+#include "audio_internal.h"
 
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 
 struct mezon_audio_ctx {
   mezon_audio_config_t config;
+  mezon_opus_codec_t *codec;
+  mezon_audio_jitter_t jitter;
+  atomic_flag jitter_lock;
   uint16_t next_seq;
   uint32_t next_timestamp;
-  uint16_t expected_seq;
-  int have_expected_seq;
-  int16_t *decode_buffer;
-  size_t decode_samples;
+  int sender_silent;
+  size_t consecutive_plc;
+  uint8_t decode_payload[MEZON_OPUS_MAX_PACKET_SIZE];
+  int16_t decode_buffer[MEZON_OPUS_FRAME_SAMPLES];
   mezon_stats_t stats;
 };
 
+static void lock_audio(mezon_audio_ctx_t *ctx) {
+  while (atomic_flag_test_and_set_explicit(&ctx->jitter_lock,
+                                            memory_order_acquire)) {
+  }
+}
+
+static void unlock_audio(mezon_audio_ctx_t *ctx) {
+  atomic_flag_clear_explicit(&ctx->jitter_lock, memory_order_release);
+}
+
 mezon_audio_ctx_t *mezon_audio_create(const mezon_audio_config_t *config) {
   mezon_audio_ctx_t *ctx;
-  size_t max_payload;
-  if (!config || config->sample_rate == 0 || config->channels == 0 ||
-      config->payload_type > 127U ||
+  size_t target_frames;
+  size_t max_frames;
+  uint16_t target_ms;
+  uint16_t max_ms;
+  if (!config || config->payload_type > 127U ||
       (config->mtu && config->mtu <= MEZON_RTP_HEADER_SIZE + 2U)) {
+    return NULL;
+  }
+  target_ms = config->jitter_target_ms ? config->jitter_target_ms : 60U;
+  max_ms = config->jitter_max_ms ? config->jitter_max_ms : 120U;
+  if (target_ms < 40U || max_ms > 120U || target_ms > max_ms ||
+      target_ms % MEZON_OPUS_FRAME_MS != 0 ||
+      max_ms % MEZON_OPUS_FRAME_MS != 0) {
     return NULL;
   }
   ctx = (mezon_audio_ctx_t *)calloc(1, sizeof(*ctx));
@@ -29,17 +52,21 @@ mezon_audio_ctx_t *mezon_audio_create(const mezon_audio_config_t *config) {
   }
   ctx->config = *config;
   ctx->config.mtu = config->mtu ? config->mtu : MEZON_DEFAULT_MTU;
-  if (!ctx->config.payload_type) {
-    ctx->config.payload_type = MEZON_DEFAULT_AUDIO_PAYLOAD_TYPE;
-  }
-  max_payload = ctx->config.mtu - MEZON_RTP_HEADER_SIZE;
-  ctx->decode_samples = max_payload / 2U;
-  ctx->decode_buffer =
-      (int16_t *)malloc(ctx->decode_samples * sizeof(*ctx->decode_buffer));
-  if (!ctx->decode_buffer) {
+  ctx->config.payload_type = config->payload_type
+                                 ? config->payload_type
+                                 : MEZON_DEFAULT_AUDIO_PAYLOAD_TYPE;
+  ctx->config.jitter_target_ms = target_ms;
+  ctx->config.jitter_max_ms = max_ms;
+  ctx->codec = mezon_opus_create();
+  if (!ctx->codec) {
     free(ctx);
     return NULL;
   }
+  atomic_flag_clear(&ctx->jitter_lock);
+  target_frames = target_ms / MEZON_OPUS_FRAME_MS;
+  max_frames = max_ms / MEZON_OPUS_FRAME_MS;
+  mezon_audio_jitter_init(&ctx->jitter, target_frames, max_frames);
+  ctx->sender_silent = 1;
   return ctx;
 }
 
@@ -47,22 +74,13 @@ void mezon_audio_destroy(mezon_audio_ctx_t *ctx) {
   if (!ctx) {
     return;
   }
-  free(ctx->decode_buffer);
+  mezon_opus_destroy(ctx->codec);
   free(ctx);
 }
 
 size_t mezon_audio_max_packets(const mezon_audio_ctx_t *ctx,
                                size_t samples_per_channel) {
-  size_t bytes;
-  size_t payload;
-  if (!ctx || !samples_per_channel ||
-      samples_per_channel > SIZE_MAX / ctx->config.channels / sizeof(int16_t)) {
-    return 0;
-  }
-  bytes = samples_per_channel * ctx->config.channels * sizeof(int16_t);
-  payload = ctx->config.mtu - MEZON_RTP_HEADER_SIZE;
-  payload -= payload % (ctx->config.channels * sizeof(int16_t));
-  return payload ? bytes / payload + (bytes % payload != 0) : 0;
+  return ctx && samples_per_channel == MEZON_OPUS_FRAME_SAMPLES ? 1U : 0U;
 }
 
 mezon_status_t mezon_audio_packetize(mezon_audio_ctx_t *ctx,
@@ -71,111 +89,140 @@ mezon_status_t mezon_audio_packetize(mezon_audio_ctx_t *ctx,
                                      mezon_packet_t *packets,
                                      size_t packet_capacity,
                                      size_t *packet_count) {
-  size_t required;
-  size_t frame_bytes;
   size_t max_payload;
-  size_t sample_offset = 0;
-  size_t i;
-  if (!ctx || !pcm || !packets || !packet_count || !samples_per_channel) {
+  size_t encoded_len = 0;
+  mezon_status_t status;
+  int dtx_packet;
+  if (!ctx || !pcm || !packets || !packet_count ||
+      samples_per_channel != MEZON_OPUS_FRAME_SAMPLES) {
     return MEZON_ERR_INVALID_ARG;
   }
-  required = mezon_audio_max_packets(ctx, samples_per_channel);
-  if (packet_capacity < required) {
-    *packet_count = required;
+  if (packet_capacity < 1U) {
+    *packet_count = 1U;
     return MEZON_ERR_BUFFER_TOO_SMALL;
   }
-  frame_bytes = ctx->config.channels * sizeof(int16_t);
   max_payload = ctx->config.mtu - MEZON_RTP_HEADER_SIZE;
-  max_payload -= max_payload % frame_bytes;
-  {
-    size_t remaining = samples_per_channel;
-    for (i = 0; i < required; ++i) {
-      size_t frames = max_payload / frame_bytes;
-      if (frames > remaining) {
-        frames = remaining;
-      }
-      if (!packets[i].data || packets[i].capacity < frames * frame_bytes) {
-        packets[i].len = frames * frame_bytes;
-        *packet_count = required;
-        return MEZON_ERR_BUFFER_TOO_SMALL;
-      }
-      remaining -= frames;
-    }
+  if (max_payload > MEZON_OPUS_MAX_PACKET_SIZE) {
+    max_payload = MEZON_OPUS_MAX_PACKET_SIZE;
   }
-  for (i = 0; i < required; ++i) {
-    size_t samples_left = samples_per_channel - sample_offset;
-    size_t frames = max_payload / frame_bytes;
-    size_t j;
-    if (frames > samples_left) {
-      frames = samples_left;
-    }
-    for (j = 0; j < frames * ctx->config.channels; ++j) {
-      uint16_t value = (uint16_t)pcm[sample_offset * ctx->config.channels + j];
-      packets[i].data[j * 2U] = (uint8_t)(value >> 8);
-      packets[i].data[j * 2U + 1U] = (uint8_t)value;
-    }
-    packets[i].len = frames * frame_bytes;
-    packets[i].payload_type = ctx->config.payload_type;
-    packets[i].marker = (uint8_t)(i + 1U == required);
-    packets[i].seq = ctx->next_seq++;
-    packets[i].timestamp = ctx->next_timestamp + (uint32_t)sample_offset;
-    packets[i].ssrc = ctx->config.ssrc;
-    sample_offset += frames;
+  if (!packets[0].data || packets[0].capacity < max_payload) {
+    packets[0].len = max_payload;
+    *packet_count = 1U;
+    return MEZON_ERR_BUFFER_TOO_SMALL;
   }
-  ctx->next_timestamp += (uint32_t)samples_per_channel;
-  *packet_count = required;
+  status = mezon_opus_encode(ctx->codec, pcm, packets[0].data, max_payload,
+                             &encoded_len);
+  if (status != MEZON_OK) {
+    return status;
+  }
+  dtx_packet = encoded_len <= 2U;
+  packets[0].len = encoded_len;
+  packets[0].payload_type = ctx->config.payload_type;
+  packets[0].marker = (uint8_t)(!dtx_packet && ctx->sender_silent);
+  packets[0].seq = ctx->next_seq;
+  packets[0].timestamp = ctx->next_timestamp;
+  packets[0].ssrc = ctx->config.ssrc;
+  ctx->next_seq++;
+  ctx->next_timestamp += MEZON_OPUS_FRAME_SAMPLES;
+  ctx->sender_silent = dtx_packet;
+  ctx->stats.audio_frames_encoded++;
+  ctx->stats.packets_sent++;
+  ctx->stats.bytes_sent += encoded_len;
+  *packet_count = 1U;
   return MEZON_OK;
 }
 
 mezon_status_t mezon_audio_receive(mezon_audio_ctx_t *ctx,
                                    const mezon_packet_t *packet) {
-  size_t scalar_samples;
-  size_t samples_per_channel;
-  size_t i;
-  int discontinuity = 0;
-  if (!ctx || !packet || !packet->data ||
-      packet->payload_type != ctx->config.payload_type ||
-      packet->len % (ctx->config.channels * sizeof(int16_t)) != 0) {
+  mezon_status_t status;
+  if (!ctx || !packet || packet->payload_type != ctx->config.payload_type) {
     return MEZON_ERR_INVALID_ARG;
   }
-  if (ctx->have_expected_seq) {
-    if (packet->seq == (uint16_t)(ctx->expected_seq - 1U)) {
-      ctx->stats.duplicate_packets++;
-      return MEZON_OK;
-    }
-    if (mezon_seq_before(packet->seq, ctx->expected_seq)) {
-      ctx->stats.late_packets++;
-      return MEZON_OK;
-    }
-    if (packet->seq != ctx->expected_seq) {
-      ctx->stats.sequence_gaps += (uint16_t)(packet->seq - ctx->expected_seq);
-      discontinuity = 1;
-    }
+  lock_audio(ctx);
+  status = mezon_audio_jitter_insert(&ctx->jitter, packet, &ctx->stats);
+  if (status == MEZON_OK) {
+    ctx->stats.packets_received++;
+    ctx->stats.bytes_received += packet->len;
   }
-  ctx->expected_seq = (uint16_t)(packet->seq + 1U);
-  ctx->have_expected_seq = 1;
-  scalar_samples = packet->len / 2U;
-  if (scalar_samples > ctx->decode_samples) {
-    return MEZON_ERR_BUFFER_TOO_SMALL;
+  unlock_audio(ctx);
+  return status;
+}
+
+mezon_status_t mezon_audio_playout(mezon_audio_ctx_t *ctx, uint64_t now_ns) {
+  size_t payload_len = 0;
+  uint32_t timestamp = 0;
+  uint8_t marker = 0;
+  uint16_t expected_seq;
+  int normal;
+  int fec;
+  int discontinuity = 0;
+  mezon_status_t status;
+  if (!ctx) {
+    return MEZON_ERR_INVALID_ARG;
   }
-  for (i = 0; i < scalar_samples; ++i) {
-    ctx->decode_buffer[i] =
-        (int16_t)(((uint16_t)packet->data[i * 2U] << 8) |
-                  packet->data[i * 2U + 1U]);
+  lock_audio(ctx);
+  if (!mezon_audio_jitter_ready(&ctx->jitter, now_ns)) {
+    unlock_audio(ctx);
+    return MEZON_ERR_NOT_READY;
   }
-  samples_per_channel = scalar_samples / ctx->config.channels;
-  ctx->stats.packets_received++;
-  ctx->stats.bytes_received += packet->len;
+  expected_seq = ctx->jitter.expected_seq;
+  timestamp = ctx->jitter.expected_timestamp;
+  normal = mezon_audio_jitter_copy(&ctx->jitter, expected_seq,
+                                   ctx->decode_payload, &payload_len, &timestamp,
+                                   &marker, 1);
+  fec = 0;
+  if (!normal) {
+    fec = mezon_audio_jitter_copy(&ctx->jitter, (uint16_t)(expected_seq + 1U),
+                                  ctx->decode_payload, &payload_len, &timestamp,
+                                  &marker, 0);
+    timestamp = ctx->jitter.expected_timestamp;
+    ctx->stats.sequence_gaps++;
+    ctx->stats.audio_jitter_underruns++;
+  }
+  mezon_audio_jitter_advance(&ctx->jitter);
+  unlock_audio(ctx);
+
+  if (normal) {
+    status = mezon_opus_decode(ctx->codec, ctx->decode_payload, payload_len, 0,
+                               ctx->decode_buffer);
+    ctx->consecutive_plc = 0;
+  } else if (fec) {
+    status = mezon_opus_decode(ctx->codec, ctx->decode_payload, payload_len, 1,
+                               ctx->decode_buffer);
+    if (status == MEZON_OK) {
+      ctx->stats.audio_frames_fec_recovered++;
+    }
+    ctx->consecutive_plc = 0;
+  } else if (ctx->consecutive_plc < 6U) {
+    status = mezon_opus_decode(ctx->codec, NULL, 0, 0, ctx->decode_buffer);
+    if (status == MEZON_OK) {
+      ctx->stats.audio_frames_plc++;
+    }
+    ctx->consecutive_plc++;
+    discontinuity = 1;
+  } else {
+    memset(ctx->decode_buffer, 0, sizeof(ctx->decode_buffer));
+    status = MEZON_OK;
+    discontinuity = 1;
+  }
+  if (status != MEZON_OK) {
+    ctx->stats.audio_frames_dropped++;
+    return status;
+  }
+  ctx->stats.audio_frames_decoded++;
   if (ctx->config.on_audio) {
-    ctx->config.on_audio(ctx->decode_buffer, samples_per_channel,
-                         packet->timestamp, discontinuity,
-                         ctx->config.user_data);
+    ctx->config.on_audio(ctx->decode_buffer, MEZON_OPUS_FRAME_SAMPLES,
+                         timestamp, discontinuity, ctx->config.user_data);
   }
   return MEZON_OK;
 }
 
 void mezon_audio_get_stats(const mezon_audio_ctx_t *ctx, mezon_stats_t *stats) {
-  if (ctx && stats) {
-    *stats = ctx->stats;
+  mezon_audio_ctx_t *mutable_ctx = (mezon_audio_ctx_t *)ctx;
+  if (!ctx || !stats) {
+    return;
   }
+  lock_audio(mutable_ctx);
+  *stats = ctx->stats;
+  unlock_audio(mutable_ctx);
 }

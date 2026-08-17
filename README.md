@@ -1,34 +1,56 @@
 # libmezia
 
 `libmezia` is a small C11 media data-plane library for ultra-low-latency native
-applications. The current portable-core milestone sends media over direct,
-unencrypted UDP using a deliberately small RTP v2 subset:
+mobile applications. The portable core currently provides:
 
-- signed 16-bit interleaved PCM audio, carried as big-endian L16 payloads;
-- H.264 NAL units produced by a platform hardware encoder, packetized as RFC
-  6184 single-NAL or FU-A payloads;
-- synchronous UDP sending and a dedicated receive callback thread;
-- bounded packet/NAL sizes and freshness-first loss handling.
+- Opus voice audio over RTP: 48 kHz mono, 20 ms frames, 24 kbit/s constrained
+  VBR, DTX, in-band FEC, and packet-loss concealment;
+- H.264 NAL packetization using RFC 6184 single-NAL and FU-A payloads; H.264
+  encoding and decoding remain platform hardware responsibilities;
+- direct, unencrypted UDP with a dedicated receive worker;
+- a bounded 40–120 ms audio jitter/playout path designed for variable 4G delay.
 
-The library performs **no software encoding or decoding**. Android MediaCodec
-and iOS VideoToolbox integration will supply H.264 in a later milestone. Audio
-is uncompressed PCM, so bandwidth is `sample_rate * channels * 16` bits/s
-before RTP/UDP/IP overhead (48 kHz stereo is about 1.536 Mbit/s).
+Opus is intentionally the only software codec. Uncompressed PCM is not sent on
+the network: 48 kHz mono PCM requires about 768 kbit/s before headers, while the
+default Opus voice payload is approximately 24 kbit/s before RTP/UDP/IP
+overhead.
 
 ## Security and network scope
 
-Traffic is unencrypted and unauthenticated. Use this milestone only on trusted
-networks or inside another protected tunnel. Anyone able to reach the UDP port
-may observe or inject media. STUN, ICE, TURN, SRTP, peer authentication, RTCP,
+Traffic is unencrypted and unauthenticated. Use it only on trusted networks or
+inside another protected tunnel. Anyone able to reach the UDP port may observe
+or inject media. STUN, ICE, TURN, SRTP, peer authentication, RTCP,
 retransmission, pacing, and congestion control are not implemented yet.
 
 Peers use application-provided direct IP addresses and UDP ports. The receiver
 accepts packets only from the configured remote endpoint.
 
-## Build and test
+## Requirements
 
-Requirements: CMake 3.16+, a C11 compiler, and platform thread/socket support.
-There is no Opus dependency.
+- CMake 3.16 or newer
+- C11 and C++17 compilers
+- libopus development headers and library
+- platform thread/socket support
+
+Install Opus on common desktop systems:
+
+```bash
+# Debian/Ubuntu
+sudo apt install libopus-dev
+
+# Fedora
+sudo dnf install opus-devel
+
+# macOS
+brew install opus
+```
+
+CMake searches for an Opus package target, then pkg-config, then
+`OPUS_INCLUDE_DIR` and `OPUS_LIBRARY`. Configuration fails if Opus is absent.
+Android and iOS builds must provide a target-architecture libopus package; the
+build must not link a host desktop library while cross-compiling.
+
+## Build and test
 
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
@@ -47,37 +69,60 @@ cmake --build build-strict --parallel
 ctest --test-dir build-strict --output-on-failure
 ```
 
-## API model
+## Audio contract
 
-- `mezon_peer_t` owns a UDP socket and one receive worker. `mezon_peer_send()`
-  is synchronous; receive callbacks run on the worker thread.
-- `mezon_audio_ctx_t` converts caller-owned host-endian PCM to/from RTP L16
-  payloads. `samples_per_channel` is explicit.
-- `mezon_video_ctx_t` accepts one H.264 NAL without an Annex-B start code and
-  emits/consumes single-NAL and FU-A payloads. The caller marks the last NAL of
-  an access unit.
-- `mezia_ctx_t` combines one peer with optional audio and video contexts.
-- Packet payload buffers are caller-owned. Packetizers never retain them and
-  report required packet counts/capacities with `MEZON_ERR_BUFFER_TOO_SMALL`.
-- Receive payload pointers are valid only for the duration of the callback.
+The first mobile profile is fixed so both peers agree without a signaling
+layer:
 
-Default dynamic RTP payload types are 96 for PCM and 97 for H.264. The default
-UDP MTU is 1200 bytes.
+| Setting | Value |
+|---|---:|
+| PCM application boundary | signed 16-bit, 48 kHz, mono |
+| Frame duration | 20 ms / 960 samples |
+| Opus application | VOIP |
+| Bitrate | 24 kbit/s constrained VBR |
+| Complexity | 5 |
+| DTX / in-band FEC | enabled |
+| Expected packet loss | 10% |
+| RTP clock | 48 kHz |
+| Default RTP payload type | 96 |
+| Default jitter target / maximum | 60 ms / 120 ms |
+
+`mezia_send_audio()` accepts exactly 960 PCM samples and emits one Opus RTP
+packet synchronously. The audio capture thread should call it every 20 ms.
+
+UDP receive callbacks only copy compressed payloads into fixed-capacity jitter
+storage. The audio rendering thread calls `mezia_playout_audio()` every 20 ms.
+Before startup buffering completes it returns `MEZON_ERR_NOT_READY`; afterwards
+it produces one 960-sample callback per tick. A missing packet is recovered from
+the following packet with FEC when available, otherwise Opus PLC is used.
+Prolonged absence transitions to silence rather than allowing unbounded PLC or
+latency.
+
+Audio packetization, receive admission, and playout perform no steady-state
+heap allocation. Packet payload buffers supplied to lower-level packetizers are
+caller-owned and are never retained.
+
+## Video contract
+
+`mezon_video_ctx_t` accepts one H.264 NAL without an Annex-B start code and
+emits/consumes RFC 6184 single-NAL or FU-A payloads. The caller marks the final
+NAL of an access unit. The default dynamic payload type is 97. Software H.264
+encoding or decoding is not included.
 
 ## Build options
 
 | Option | Default | Description |
 |---|---:|---|
-| `BUILD_TESTING` | CMake default | Build deterministic unit and UDP loopback tests |
+| `BUILD_TESTING` | CMake default | Build RTP, Opus, H.264, and UDP tests |
 | `MEZON_BUILD_EXAMPLES` | `ON` | Build the portable-core example |
 | `MEZON_BUILD_IOS` | `OFF` | Build the currently skeletal iOS bridge |
 | `MEZON_BUILD_ANDROID` | `OFF` | Build the currently skeletal Android bridge |
 
 ## Current limitations and next milestones
 
-The portable core does not yet provide adaptive jitter buffering, audio device
-capture/playout, camera capture, hardware encoder/decoder sessions, A/V clock
-synchronization, keyframe requests, RTCP feedback, congestion control, NAT
-traversal, or cryptographic protection. The next platform milestone should
-connect AVFoundation/VideoToolbox and Camera2/MediaCodec/AAudio to the existing
-PCM and H.264 boundaries without adding software codecs.
+The portable core does not yet provide audio-device capture/playout, camera
+capture, hardware H.264 sessions, A/V clock synchronization, keyframe requests,
+RTCP feedback, congestion control, NAT traversal, signaling, or cryptographic
+protection. The next platform milestone should connect AVFoundation and
+VideoToolbox on iOS, and AAudio/Camera2/MediaCodec on Android, to the existing
+PCM and H.264 boundaries.

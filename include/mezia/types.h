@@ -14,6 +14,13 @@ extern "C" {
 #define MEZON_DEFAULT_AUDIO_PAYLOAD_TYPE 96U
 #define MEZON_DEFAULT_VIDEO_PAYLOAD_TYPE 97U
 
+#define MEZON_OPUS_SAMPLE_RATE 48000U
+#define MEZON_OPUS_CHANNELS 1U
+#define MEZON_OPUS_FRAME_MS 20U
+#define MEZON_OPUS_FRAME_SAMPLES 960U
+#define MEZON_OPUS_BITRATE 24000U
+#define MEZON_OPUS_EXPECTED_LOSS_PERCENT 10U
+
 typedef enum {
   MEZON_OK = 0,
   MEZON_ERR_INVALID_ARG = -1,
@@ -26,10 +33,11 @@ typedef enum {
   MEZON_ERR_WOULD_BLOCK = -8,
   MEZON_ERR_UNSUPPORTED = -9,
   MEZON_ERR_STATE = -10,
+  MEZON_ERR_CODEC = -11,
 } mezon_status_t;
 
 typedef enum {
-  MEZON_MEDIA_AUDIO_PCM_L16 = 0,
+  MEZON_MEDIA_AUDIO_OPUS = 0,
   MEZON_MEDIA_VIDEO_H264 = 1,
 } mezon_media_type_t;
 
@@ -58,6 +66,13 @@ typedef struct {
   uint64_t late_packets;
   uint64_t reassembly_failures;
   uint64_t socket_errors;
+  uint64_t audio_frames_encoded;
+  uint64_t audio_frames_decoded;
+  uint64_t audio_frames_fec_recovered;
+  uint64_t audio_frames_plc;
+  uint64_t audio_frames_dropped;
+  uint64_t audio_jitter_resets;
+  uint64_t audio_jitter_underruns;
 } mezon_stats_t;
 
 #ifdef __cplusplus

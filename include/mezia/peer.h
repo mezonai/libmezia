@@ -1,7 +1,7 @@
-#ifndef MEZON_MEDIA_PEER_H
-#define MEZON_MEDIA_PEER_H
+#ifndef mezia_PEER_H
+#define mezia_PEER_H
 
-#include "mezon_media/types.h"
+#include "mezia/types.h"
 
 #ifdef __cplusplus
 extern "C" {

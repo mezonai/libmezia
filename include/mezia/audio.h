@@ -1,7 +1,7 @@
-#ifndef MEZON_MEDIA_AUDIO_H
-#define MEZON_MEDIA_AUDIO_H
+#ifndef mezia_AUDIO_H
+#define mezia_AUDIO_H
 
-#include "mezon_media/types.h"
+#include "mezia/types.h"
 
 #ifdef __cplusplus
 extern "C" {

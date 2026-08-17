@@ -17,7 +17,7 @@ if(MEZON_BUILD_IOS)
     enable_language(OBJCXX)
 endif()
 
-add_library(mezon_media STATIC
+add_library(mezia STATIC
     src/media/media.c
     src/media/clock.c
 
@@ -40,7 +40,7 @@ add_library(mezon_media STATIC
     src/p2p/candidate.c
 )
 
-target_include_directories(mezon_media
+target_include_directories(mezia
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>
@@ -48,32 +48,32 @@ target_include_directories(mezon_media
 
 find_package(Opus QUIET)
 if(Opus_FOUND)
-    target_link_libraries(mezon_media PUBLIC Opus::opus)
+    target_link_libraries(mezia PUBLIC Opus::opus)
 endif()
 
 if(WIN32)
-    target_link_libraries(mezon_media PUBLIC ws2_32)
+    target_link_libraries(mezia PUBLIC ws2_32)
 endif()
 
 if(MEZON_BUILD_IOS)
-    add_library(mezon_media_ios STATIC
+    add_library(mezia_ios STATIC
         platform/ios/camera.m
         platform/ios/video_encoder.m
         platform/ios/audio.m
     )
-    target_link_libraries(mezon_media_ios
-        PUBLIC mezon_media
+    target_link_libraries(mezia_ios
+        PUBLIC mezia
         PRIVATE
             "-framework AVFoundation"
             "-framework VideoToolbox"
             "-framework CoreMedia"
             "-framework CoreVideo"
     )
-    target_include_directories(mezon_media_ios PUBLIC include)
+    target_include_directories(mezia_ios PUBLIC include)
 endif()
 
 if(MEZON_BUILD_ANDROID)
-    add_library(mezon_media_android STATIC
+    add_library(mezia_android STATIC
         platform/android/camera.cpp
         platform/android/video_encoder.cpp
         platform/android/audio.cpp
@@ -81,17 +81,17 @@ if(MEZON_BUILD_ANDROID)
     find_library(ANDROID_MEDIA_LIB mediandk)
     find_library(ANDROID_CAMERA_LIB camera2ndk)
     find_library(ANDROID_LOG_LIB log)
-    target_link_libraries(mezon_media_android
-        PUBLIC mezon_media
+    target_link_libraries(mezia_android
+        PUBLIC mezia
         PRIVATE
             ${ANDROID_MEDIA_LIB}
             ${ANDROID_CAMERA_LIB}
             ${ANDROID_LOG_LIB}
     )
-    target_include_directories(mezon_media_android PUBLIC include)
+    target_include_directories(mezia_android PUBLIC include)
 endif()
 
-install(TARGETS mezon_media
+install(TARGETS mezia
     ARCHIVE DESTINATION lib
     LIBRARY DESTINATION lib
 )

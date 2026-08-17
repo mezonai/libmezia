@@ -52,7 +52,7 @@ cmake -B build -DOpus_ROOT=/path/to/opus/install
 
 ## Build: core library only
 
-Builds `libmezon_media.a` — the platform-independent audio/video/transport/p2p
+Builds `libmezia.a` — the platform-independent audio/video/transport/p2p
 code. No Xcode or NDK needed.
 
 ```bash
@@ -60,8 +60,8 @@ cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
 ```
 
-Output: `build/libmezon_media.a`
-Headers: `include/mezon_media/*.h`
+Output: `build/libmezia.a`
+Headers: `include/mezia/*.h`
 
 Install to a prefix (optional):
 
@@ -71,8 +71,8 @@ cmake --install build --prefix /path/to/install
 
 ## Build: iOS
 
-Requires macOS + Xcode command line tools. Produces `libmezon_media_ios.a`,
-which links `mezon_media` plus the VideoToolbox/AVFoundation bridge.
+Requires macOS + Xcode command line tools. Produces `libmezia_ios.a`,
+which links `mezia` plus the VideoToolbox/AVFoundation bridge.
 
 ### Using the Xcode generator (device + simulator via `xcodebuild`)
 
@@ -100,7 +100,7 @@ cmake --build build-ios -j
 For simulator builds on Apple Silicon, add
 `-DCMAKE_OSX_SYSROOT=iphonesimulator -DCMAKE_OSX_ARCHITECTURES=arm64`.
 
-Output: `build-ios/libmezon_media_ios.a` (Release config under `Release-iphoneos/`
+Output: `build-ios/libmezia_ios.a` (Release config under `Release-iphoneos/`
 if using the Xcode generator)
 
 Link the resulting static lib into your Xcode app target, along with the
@@ -127,9 +127,9 @@ cmake --build build-android -j
 Repeat with `-DANDROID_ABI=armeabi-v7a`, `x86`, or `x86_64` as needed for other
 ABIs, using separate build directories per ABI.
 
-Output: `build-android/libmezon_media_android.a`
+Output: `build-android/libmezia_android.a`
 
-This links `mezon_media` plus the Camera2/MediaCodec bridge (`libmediandk`,
+This links `mezia` plus the Camera2/MediaCodec bridge (`libmediandk`,
 `libcamera2ndk`, `liblog`). Consume the static lib from your app's own
 `CMakeLists.txt` / Gradle `externalNativeBuild`, or bundle it into a `.so` via
 your app module.
@@ -138,15 +138,15 @@ your app module.
 
 | Option                | Default | Description                                    |
 |------------------------|---------|-------------------------------------------------|
-| `MEZON_BUILD_IOS`      | `OFF`   | Build the iOS platform bridge (`mezon_media_ios`)      |
-| `MEZON_BUILD_ANDROID`  | `OFF`   | Build the Android platform bridge (`mezon_media_android`) |
+| `MEZON_BUILD_IOS`      | `OFF`   | Build the iOS platform bridge (`mezia_ios`)      |
+| `MEZON_BUILD_ANDROID`  | `OFF`   | Build the Android platform bridge (`mezia_android`) |
 
 ## Project layout
 
 ```
 libmezia/
 ├── CMakeLists.txt
-├── include/mezon_media/     public headers
+├── include/mezia/     public headers
 ├── src/
 │   ├── media/                lifecycle, clock
 │   ├── audio/                Opus encode/decode, jitter buffer
@@ -162,6 +162,6 @@ libmezia/
 
 ```cmake
 add_subdirectory(libmezia)
-target_link_libraries(your_app PRIVATE mezon_media)
-# or mezon_media_ios / mezon_media_android if built
+target_link_libraries(your_app PRIVATE mezia)
+# or mezia_ios / mezia_android if built
 ```

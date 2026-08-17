@@ -1,7 +1,7 @@
-#ifndef MEZON_MEDIA_VIDEO_H
-#define MEZON_MEDIA_VIDEO_H
+#ifndef mezia_VIDEO_H
+#define mezia_VIDEO_H
 
-#include "mezon_media/types.h"
+#include "mezia/types.h"
 
 #ifdef __cplusplus
 extern "C" {

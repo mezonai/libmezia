@@ -1,5 +1,5 @@
-#ifndef MEZON_MEDIA_TYPES_H
-#define MEZON_MEDIA_TYPES_H
+#ifndef mezia_TYPES_H
+#define mezia_TYPES_H
 
 #include <stddef.h>
 #include <stdint.h>

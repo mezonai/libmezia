@@ -1,4 +1,4 @@
-#include "mezon_media/audio.h"
+#include "mezia/audio.h"
 
 struct mezon_audio_ctx {
   int sample_rate;

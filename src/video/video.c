@@ -1,4 +1,4 @@
-#include "mezon_media/video.h"
+#include "mezia/video.h"
 
 struct mezon_video_ctx {
   int width;

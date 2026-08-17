@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(mezon_mezia C CXX)
+project(mezon_mezia VERSION 0.1.0 LANGUAGES C CXX)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -8,6 +8,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 option(MEZON_BUILD_IOS "Build iOS platform bridge" OFF)
 option(MEZON_BUILD_ANDROID "Build Android platform bridge" OFF)
+option(MEZON_BUILD_EXAMPLES "Build examples" ON)
 
 if(MEZON_BUILD_IOS)
     if(NOT APPLE)
@@ -17,12 +18,13 @@ if(MEZON_BUILD_IOS)
     enable_language(OBJCXX)
 endif()
 
+find_package(Threads REQUIRED)
+
 add_library(mezia STATIC
     src/media/media.c
     src/media/clock.c
 
     src/audio/audio.c
-    src/audio/opus.c
     src/audio/jitter.c
 
     src/video/video.c
@@ -33,23 +35,18 @@ add_library(mezia STATIC
     src/transport/udp.c
     src/transport/packet.c
     src/transport/transport.c
-    src/transport/congestion.c
 
     src/p2p/p2p.c
-    src/p2p/stun.c
-    src/p2p/candidate.c
 )
 
 target_include_directories(mezia
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/internal
 )
-
-find_package(Opus QUIET)
-if(Opus_FOUND)
-    target_link_libraries(mezia PUBLIC Opus::opus)
-endif()
+target_link_libraries(mezia PRIVATE Threads::Threads)
 
 if(WIN32)
     target_link_libraries(mezia PUBLIC ws2_32)
@@ -89,6 +86,31 @@ if(MEZON_BUILD_ANDROID)
             ${ANDROID_LOG_LIB}
     )
     target_include_directories(mezia_android PUBLIC include)
+endif()
+
+include(CTest)
+if(BUILD_TESTING)
+    add_executable(test_packet tests/test_packet.c)
+    target_include_directories(test_packet PRIVATE src/internal)
+    target_link_libraries(test_packet PRIVATE mezia)
+    add_test(NAME packet COMMAND test_packet)
+
+    add_executable(test_audio tests/test_audio.c)
+    target_link_libraries(test_audio PRIVATE mezia)
+    add_test(NAME audio COMMAND test_audio)
+
+    add_executable(test_video tests/test_video.c)
+    target_link_libraries(test_video PRIVATE mezia)
+    add_test(NAME video COMMAND test_video)
+
+    add_executable(test_udp_loopback tests/test_udp_loopback.c)
+    target_link_libraries(test_udp_loopback PRIVATE mezia Threads::Threads)
+    add_test(NAME udp_loopback COMMAND test_udp_loopback)
+endif()
+
+if(MEZON_BUILD_EXAMPLES)
+    add_executable(mezia_loopback examples/loopback.c)
+    target_link_libraries(mezia_loopback PRIVATE mezia Threads::Threads)
 endif()
 
 install(TARGETS mezia

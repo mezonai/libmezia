@@ -1,1 +1,1 @@
-#include "mezia/types.h"
+/* RTP serialization is implemented by src/transport/packet.c. */

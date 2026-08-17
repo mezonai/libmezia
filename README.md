@@ -1,167 +1,83 @@
-# libmezon
+# libmezia
 
-P2P media transport library for Mezon's native mobile clients. Handles Opus
-audio codec, H.264 RTP packetization/depacketization, UDP transport, and P2P
-(STUN/ICE) — no software video codec. H.264 encode/decode is done by the
-platform's hardware codec (VideoToolbox on iOS, MediaCodec on Android); this
-library only packetizes and depacketizes already-encoded NAL units.
+`libmezia` is a small C11 media data-plane library for ultra-low-latency native
+applications. The current portable-core milestone sends media over direct,
+unencrypted UDP using a deliberately small RTP v2 subset:
 
-```
-                 libmezon-media
-                       │
-          ┌────────────┴────────────┐
-          │                         │
-        Audio                     Video
-          │                         │
-        Opus                     H.264 (packetize only)
-          │                         │
-          └────────────┬────────────┘
-                       │
-                P2P UDP Transport
-                       │
-              ┌────────┴────────┐
-              │                 │
-            iOS               Android
-```
+- signed 16-bit interleaved PCM audio, carried as big-endian L16 payloads;
+- H.264 NAL units produced by a platform hardware encoder, packetized as RFC
+  6184 single-NAL or FU-A payloads;
+- synchronous UDP sending and a dedicated receive callback thread;
+- bounded packet/NAL sizes and freshness-first loss handling.
 
-## Prerequisites
+The library performs **no software encoding or decoding**. Android MediaCodec
+and iOS VideoToolbox integration will supply H.264 in a later milestone. Audio
+is uncompressed PCM, so bandwidth is `sample_rate * channels * 16` bits/s
+before RTP/UDP/IP overhead (48 kHz stereo is about 1.536 Mbit/s).
 
-| Target        | Requirements                                                    |
-|---------------|-------------------------------------------------------------------|
-| Core library  | CMake ≥ 3.16, a C11/C++17 compiler, [libopus](https://opus-codec.org/) |
-| iOS bridge    | macOS + Xcode, CMake, `MEZON_BUILD_IOS=ON`                       |
-| Android bridge| Android NDK (r21+), CMake, `MEZON_BUILD_ANDROID=ON`               |
+## Security and network scope
 
-### Installing Opus
+Traffic is unencrypted and unauthenticated. Use this milestone only on trusted
+networks or inside another protected tunnel. Anyone able to reach the UDP port
+may observe or inject media. STUN, ICE, TURN, SRTP, peer authentication, RTCP,
+retransmission, pacing, and congestion control are not implemented yet.
+
+Peers use application-provided direct IP addresses and UDP ports. The receiver
+accepts packets only from the configured remote endpoint.
+
+## Build and test
+
+Requirements: CMake 3.16+, a C11 compiler, and platform thread/socket support.
+There is no Opus dependency.
 
 ```bash
-# macOS
-brew install opus
-
-# Debian/Ubuntu
-sudo apt install libopus-dev
-
-# Or build from source: https://opus-codec.org/downloads/
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
+cmake --build build --parallel
+ctest --test-dir build --output-on-failure
+./build/mezia_loopback
 ```
 
-If `find_package(Opus)` can't locate it, point CMake at it explicitly:
+Strict development build:
 
 ```bash
-cmake -B build -DOpus_ROOT=/path/to/opus/install
+cmake -S . -B build-strict \
+  -DBUILD_TESTING=ON \
+  -DCMAKE_C_FLAGS="-Wall -Wextra -Wpedantic -Werror"
+cmake --build build-strict --parallel
+ctest --test-dir build-strict --output-on-failure
 ```
 
-## Build: core library only
+## API model
 
-Builds `libmezia.a` — the platform-independent audio/video/transport/p2p
-code. No Xcode or NDK needed.
+- `mezon_peer_t` owns a UDP socket and one receive worker. `mezon_peer_send()`
+  is synchronous; receive callbacks run on the worker thread.
+- `mezon_audio_ctx_t` converts caller-owned host-endian PCM to/from RTP L16
+  payloads. `samples_per_channel` is explicit.
+- `mezon_video_ctx_t` accepts one H.264 NAL without an Annex-B start code and
+  emits/consumes single-NAL and FU-A payloads. The caller marks the last NAL of
+  an access unit.
+- `mezia_ctx_t` combines one peer with optional audio and video contexts.
+- Packet payload buffers are caller-owned. Packetizers never retain them and
+  report required packet counts/capacities with `MEZON_ERR_BUFFER_TOO_SMALL`.
+- Receive payload pointers are valid only for the duration of the callback.
 
-```bash
-cmake -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j
-```
+Default dynamic RTP payload types are 96 for PCM and 97 for H.264. The default
+UDP MTU is 1200 bytes.
 
-Output: `build/libmezia.a`
-Headers: `include/mezia/*.h`
+## Build options
 
-Install to a prefix (optional):
+| Option | Default | Description |
+|---|---:|---|
+| `BUILD_TESTING` | CMake default | Build deterministic unit and UDP loopback tests |
+| `MEZON_BUILD_EXAMPLES` | `ON` | Build the portable-core example |
+| `MEZON_BUILD_IOS` | `OFF` | Build the currently skeletal iOS bridge |
+| `MEZON_BUILD_ANDROID` | `OFF` | Build the currently skeletal Android bridge |
 
-```bash
-cmake --install build --prefix /path/to/install
-```
+## Current limitations and next milestones
 
-## Build: iOS
-
-Requires macOS + Xcode command line tools. Produces `libmezia_ios.a`,
-which links `mezia` plus the VideoToolbox/AVFoundation bridge.
-
-### Using the Xcode generator (device + simulator via `xcodebuild`)
-
-```bash
-cmake -B build-ios -G Xcode \
-  -DCMAKE_SYSTEM_NAME=iOS \
-  -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 \
-  -DMEZON_BUILD_IOS=ON
-
-cmake --build build-ios --config Release
-```
-
-### Using a standalone toolchain (Makefiles, single architecture)
-
-```bash
-cmake -B build-ios \
-  -DCMAKE_SYSTEM_NAME=iOS \
-  -DCMAKE_OSX_ARCHITECTURES=arm64 \
-  -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 \
-  -DMEZON_BUILD_IOS=ON
-
-cmake --build build-ios -j
-```
-
-For simulator builds on Apple Silicon, add
-`-DCMAKE_OSX_SYSROOT=iphonesimulator -DCMAKE_OSX_ARCHITECTURES=arm64`.
-
-Output: `build-ios/libmezia_ios.a` (Release config under `Release-iphoneos/`
-if using the Xcode generator)
-
-Link the resulting static lib into your Xcode app target, along with the
-`AVFoundation`, `VideoToolbox`, `CoreMedia`, and `CoreVideo` frameworks (already
-attached automatically if you consume this via CMake `target_link_libraries`).
-
-## Build: Android
-
-Requires the Android NDK. Point `CMAKE_TOOLCHAIN_FILE` at the NDK's CMake
-toolchain file (bundled with the NDK under `build/cmake/android.toolchain.cmake`).
-
-```bash
-export ANDROID_NDK=/path/to/Android/sdk/ndk/<version>
-
-cmake -B build-android \
-  -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK/build/cmake/android.toolchain.cmake \
-  -DANDROID_ABI=arm64-v8a \
-  -DANDROID_PLATFORM=android-24 \
-  -DMEZON_BUILD_ANDROID=ON
-
-cmake --build build-android -j
-```
-
-Repeat with `-DANDROID_ABI=armeabi-v7a`, `x86`, or `x86_64` as needed for other
-ABIs, using separate build directories per ABI.
-
-Output: `build-android/libmezia_android.a`
-
-This links `mezia` plus the Camera2/MediaCodec bridge (`libmediandk`,
-`libcamera2ndk`, `liblog`). Consume the static lib from your app's own
-`CMakeLists.txt` / Gradle `externalNativeBuild`, or bundle it into a `.so` via
-your app module.
-
-## CMake build options
-
-| Option                | Default | Description                                    |
-|------------------------|---------|-------------------------------------------------|
-| `MEZON_BUILD_IOS`      | `OFF`   | Build the iOS platform bridge (`mezia_ios`)      |
-| `MEZON_BUILD_ANDROID`  | `OFF`   | Build the Android platform bridge (`mezia_android`) |
-
-## Project layout
-
-```
-libmezia/
-├── CMakeLists.txt
-├── include/mezia/     public headers
-├── src/
-│   ├── media/                lifecycle, clock
-│   ├── audio/                Opus encode/decode, jitter buffer
-│   ├── video/                H.264 NAL packetize/depacketize, jitter buffer
-│   ├── transport/            UDP, RTP/RTCP packet handling, congestion control
-│   └── p2p/                  STUN, ICE candidates, peer connection
-└── platform/
-    ├── ios/                  Camera + VideoToolbox + AVAudioEngine bridge
-    └── android/               Camera2 + MediaCodec + AAudio bridge
-```
-
-## Consuming from another CMake project
-
-```cmake
-add_subdirectory(libmezia)
-target_link_libraries(your_app PRIVATE mezia)
-# or mezia_ios / mezia_android if built
-```
+The portable core does not yet provide adaptive jitter buffering, audio device
+capture/playout, camera capture, hardware encoder/decoder sessions, A/V clock
+synchronization, keyframe requests, RTCP feedback, congestion control, NAT
+traversal, or cryptographic protection. The next platform milestone should
+connect AVFoundation/VideoToolbox and Camera2/MediaCodec/AAudio to the existing
+PCM and H.264 boundaries without adding software codecs.

@@ -1,4 +1,4 @@
-# libmezon-media
+# libmezon
 
 P2P media transport library for Mezon's native mobile clients. Handles Opus
 audio codec, H.264 RTP packetization/depacketization, UDP transport, and P2P

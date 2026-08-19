@@ -91,10 +91,14 @@ endif()
 
 if(MEZON_BUILD_IOS)
     add_library(mezia_ios STATIC
+        platform/ios/platform_ios.m
+        platform/ios/audio.m
         platform/ios/camera.m
         platform/ios/video_encoder.m
-        platform/ios/audio.m
+        platform/ios/video_decoder.m
     )
+    set_target_properties(mezia_ios PROPERTIES
+        COMPILE_FLAGS "-fobjc-arc")
     target_link_libraries(mezia_ios
         PUBLIC mezia
         PRIVATE
@@ -102,27 +106,48 @@ if(MEZON_BUILD_IOS)
             "-framework VideoToolbox"
             "-framework CoreMedia"
             "-framework CoreVideo"
+            "-framework AudioToolbox"
     )
-    target_include_directories(mezia_ios PUBLIC include)
+    target_include_directories(mezia_ios
+        PUBLIC include
+        PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/internal
+            ${CMAKE_CURRENT_SOURCE_DIR}/platform
+            ${CMAKE_CURRENT_SOURCE_DIR}/platform/ios
+    )
 endif()
 
 if(MEZON_BUILD_ANDROID)
+    if(ANDROID AND ANDROID_NATIVE_API_LEVEL AND ANDROID_NATIVE_API_LEVEL LESS 26)
+        message(FATAL_ERROR "MEZON_BUILD_ANDROID requires Android API 26+ for AAudio")
+    endif()
     add_library(mezia_android STATIC
+        platform/android/platform_android.cpp
+        platform/android/audio.cpp
         platform/android/camera.cpp
         platform/android/video_encoder.cpp
-        platform/android/audio.cpp
+        platform/android/video_decoder.cpp
     )
     find_library(ANDROID_MEDIA_LIB mediandk)
     find_library(ANDROID_CAMERA_LIB camera2ndk)
+    find_library(ANDROID_AAUDIO_LIB aaudio)
     find_library(ANDROID_LOG_LIB log)
     target_link_libraries(mezia_android
         PUBLIC mezia
         PRIVATE
             ${ANDROID_MEDIA_LIB}
             ${ANDROID_CAMERA_LIB}
+            ${ANDROID_AAUDIO_LIB}
             ${ANDROID_LOG_LIB}
+            android
     )
-    target_include_directories(mezia_android PUBLIC include)
+    target_include_directories(mezia_android
+        PUBLIC include
+        PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/internal
+            ${CMAKE_CURRENT_SOURCE_DIR}/platform
+            ${CMAKE_CURRENT_SOURCE_DIR}/platform/android
+    )
 endif()
 
 include(CTest)
@@ -159,6 +184,12 @@ if(BUILD_TESTING)
     add_executable(test_udp_loopback tests/test_udp_loopback.c)
     target_link_libraries(test_udp_loopback PRIVATE mezia Threads::Threads)
     add_test(NAME udp_loopback COMMAND test_udp_loopback)
+
+    add_executable(test_platform_helpers tests/test_platform_helpers.c)
+    target_include_directories(test_platform_helpers PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/platform)
+    target_link_libraries(test_platform_helpers PRIVATE mezia)
+    add_test(NAME platform_helpers COMMAND test_platform_helpers)
 endif()
 
 if(MEZON_BUILD_EXAMPLES)

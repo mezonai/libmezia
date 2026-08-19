@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:padding="12dp">
+
+    <SurfaceView
+        android:id="@+id/remoteSurface"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:background="#111111" />
+
+    <EditText
+        android:id="@+id/remoteIp"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:hint="Remote IP"
+        android:inputType="text"
+        android:text="192.168.1.20" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal">
+
+        <EditText
+            android:id="@+id/localPort"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:hint="Local UDP"
+            android:inputType="number"
+            android:text="5004" />
+
+        <EditText
+            android:id="@+id/remotePort"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:hint="Remote UDP"
+            android:inputType="number"
+            android:text="5004" />
+    </LinearLayout>
+
+    <CheckBox
+        android:id="@+id/enableVideo"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:checked="true"
+        android:text="Send/receive H.264" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal">
+
+        <Button
+            android:id="@+id/startStop"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="Start" />
+
+        <Button
+            android:id="@+id/flipCamera"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Flip" />
+    </LinearLayout>
+
+    <TextView
+        android:id="@+id/status"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:paddingTop="8dp"
+        android:text="Idle. Grant mic/camera, set the peer IP, Start on both phones."
+        android:textSize="12sp" />
+</LinearLayout>

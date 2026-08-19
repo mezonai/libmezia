@@ -131,14 +131,33 @@ encoding or decoding is not included.
 |---|---:|---|
 | `BUILD_TESTING` | CMake default | Build RTP, Opus, H.264, and UDP tests |
 | `MEZON_BUILD_EXAMPLES` | `ON` | Build the portable-core example |
-| `MEZON_BUILD_IOS` | `OFF` | Build the currently skeletal iOS bridge |
-| `MEZON_BUILD_ANDROID` | `OFF` | Build the currently skeletal Android bridge |
+| `MEZON_BUILD_IOS` | `OFF` | Build the iOS AVFoundation/VideoToolbox bridge (`mezia_ios`) |
+| `MEZON_BUILD_ANDROID` | `OFF` | Build the Android AAudio/Camera2/MediaCodec bridge (`mezia_android`, API 26+) |
+
+## Platform bridges
+
+`include/mezia/platform.h` wraps `mezia_ctx_t` with device capture/playout:
+
+- iOS (`MEZON_BUILD_IOS=ON` on macOS/Xcode): `AVAudioEngine` Voice Chat session
+  (48 kHz mono s16, 20 ms frames), `AVCaptureSession` 720p30, `VTCompressionSession`
+  Baseline H.264, `VTDecompressionSession` for remote NALs.
+- Android (`MEZON_BUILD_ANDROID=ON` via NDK API 26+): AAudio low-latency mono
+  48 kHz, Camera2 `AImageReader` YUV_420_888, `AMediaCodec` AVC encode/decode
+  to an optional `ANativeWindow`.
+
+The host app must request microphone/camera permission before
+`mezia_platform_start`. Video bitrate is independent of Opus adaptation; call
+`mezia_platform_set_video_bitrate` to cap H.264 when it shares the UDP path.
+
+A two-phone tester lives in `examples/android` (Android Studio, NDK r26+, API 26+).
+It fetches libopus for the target ABI and links `mezia_android` + a small JNI wrapper.
+
+iOS Info.plist keys: `NSMicrophoneUsageDescription`, `NSCameraUsageDescription`.
+Android: `RECORD_AUDIO` + `CAMERA` plus runtime permission.
 
 ## Current limitations and next milestones
 
-The portable core does not yet provide audio-device capture/playout, camera
-capture, hardware H.264 sessions, A/V clock synchronization, keyframe requests,
-RTCP feedback, congestion control, NAT traversal, signaling, or cryptographic
-protection. The next platform milestone should connect AVFoundation and
-VideoToolbox on iOS, and AAudio/Camera2/MediaCodec on Android, to the existing
-PCM and H.264 boundaries.
+Keyframe requests (RTCP PLI), A/V clock synchronization, congestion control,
+NAT traversal, signaling, and cryptographic protection are not implemented.
+Packet loss can freeze video until the next IDR. Opus cross-compiles must use
+a target-architecture libopus, never the host desktop library.

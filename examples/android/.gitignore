@@ -1,0 +1,11 @@
+# Project open
+*.iml
+.gradle
+/local.properties
+/.idea
+.DS_Store
+/build
+/app/build
+/captures
+.cxx
+.externalNativeBuild

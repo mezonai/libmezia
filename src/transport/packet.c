@@ -55,11 +55,40 @@ mezon_status_t mezon_rtp_serialize(const mezon_packet_t *packet, uint8_t *out,
 
 mezon_status_t mezon_rtp_parse(uint8_t *datagram, size_t datagram_len,
                                mezon_packet_t *packet) {
+  size_t offset;
+  unsigned int csrc_count;
+  int has_extension;
+  int has_padding;
   if (!datagram || !packet || datagram_len < MEZON_RTP_HEADER_SIZE) {
     return MEZON_ERR_MALFORMED_PACKET;
   }
-  if ((datagram[0] >> 6) != 2U || (datagram[0] & 0x3fU) != 0U) {
+  if ((datagram[0] >> 6) != 2U) {
     return MEZON_ERR_UNSUPPORTED;
+  }
+  has_padding = (datagram[0] & 0x20U) != 0U;
+  has_extension = (datagram[0] & 0x10U) != 0U;
+  csrc_count = datagram[0] & 0x0fU;
+  offset = MEZON_RTP_HEADER_SIZE + (size_t)csrc_count * 4U;
+  if (datagram_len < offset) {
+    return MEZON_ERR_MALFORMED_PACKET;
+  }
+  if (has_extension) {
+    uint16_t ext_words;
+    if (datagram_len < offset + 4U) {
+      return MEZON_ERR_MALFORMED_PACKET;
+    }
+    ext_words = read_u16(datagram + offset + 2);
+    offset += 4U + (size_t)ext_words * 4U;
+    if (datagram_len < offset) {
+      return MEZON_ERR_MALFORMED_PACKET;
+    }
+  }
+  if (has_padding) {
+    uint8_t pad = datagram[datagram_len - 1U];
+    if (pad == 0U || datagram_len - offset < pad) {
+      return MEZON_ERR_MALFORMED_PACKET;
+    }
+    datagram_len -= pad;
   }
   memset(packet, 0, sizeof(*packet));
   packet->marker = (uint8_t)((datagram[1] >> 7) & 1U);
@@ -67,8 +96,8 @@ mezon_status_t mezon_rtp_parse(uint8_t *datagram, size_t datagram_len,
   packet->seq = read_u16(datagram + 2);
   packet->timestamp = read_u32(datagram + 4);
   packet->ssrc = read_u32(datagram + 8);
-  packet->data = datagram + MEZON_RTP_HEADER_SIZE;
-  packet->len = datagram_len - MEZON_RTP_HEADER_SIZE;
+  packet->data = datagram + offset;
+  packet->len = datagram_len - offset;
   packet->capacity = packet->len;
   return MEZON_OK;
 }

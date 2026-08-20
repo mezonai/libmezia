@@ -68,6 +68,10 @@ add_library(mezia STATIC
     src/transport/packet.c
     src/transport/audio_feedback.c
 
+    src/sdp/sdp.c
+    src/session/session.c
+    src/rtcp/rtcp.c
+
     src/p2p/p2p.c
 )
 
@@ -190,6 +194,18 @@ if(BUILD_TESTING)
         ${CMAKE_CURRENT_SOURCE_DIR}/platform)
     target_link_libraries(test_platform_helpers PRIVATE mezia)
     add_test(NAME platform_helpers COMMAND test_platform_helpers)
+
+    add_executable(test_sdp tests/test_sdp.c)
+    target_link_libraries(test_sdp PRIVATE mezia)
+    add_test(NAME sdp COMMAND test_sdp)
+
+    add_executable(test_session tests/test_session.c)
+    target_link_libraries(test_session PRIVATE mezia)
+    add_test(NAME session COMMAND test_session)
+
+    add_executable(test_rtcp tests/test_rtcp.c)
+    target_link_libraries(test_rtcp PRIVATE mezia)
+    add_test(NAME rtcp COMMAND test_rtcp)
 endif()
 
 if(MEZON_BUILD_EXAMPLES)

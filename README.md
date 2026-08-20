@@ -1,7 +1,15 @@
 # libmezia
 
-`libmezia` is a small C11 media data-plane library for ultra-low-latency native
-mobile applications. The portable core currently provides:
+`libmezia` is a small C11 media engine for native Mezon clients. Compatibility
+is at the **wire** boundary that `mezon-sfu` already understands — not a
+WebRTC `PeerConnection` clone.
+
+```
+compatibility: SDP subset + RTP/RTCP + (later) SRTP/DTLS/ICE
+optimization:  lock-minimal Opus/H.264 path, no extra packet format
+```
+
+The portable core currently provides:
 
 - Opus voice audio over RTP: 48 kHz mono, 20 ms frames, 24 kbit/s constrained
   VBR, DTX, in-band FEC, and packet-loss concealment;
@@ -14,6 +22,20 @@ Opus is intentionally the only software codec. Uncompressed PCM is not sent on
 the network: 48 kHz mono PCM requires about 768 kbit/s before headers, while the
 default Opus voice payload is approximately 24 kbit/s before RTP/UDP/IP
 overhead.
+
+## Compatibility layer
+
+`mezia_session_*` consumes and generates a **small WebRTC SDP subset**:
+`BUNDLE`, `rtcp-mux`, ICE ufrag/pwd, DTLS fingerprint, Opus (`111`), H.264
+(`102`), and a handful of `extmap` lines. SDP is the signaling contract with
+`mezon-sfu`; the internal API stays session-oriented, not a PeerConnection tree.
+
+RTP parse accepts CSRCs and RFC 8285 header-extension padding so SFU packets
+are not dropped. Extensions are skipped until the SFU-required set (MID,
+audio-level, abs-send-time / TWCC, orientation) is confirmed.
+
+See `docs/WIRE.md` for the mezon-sfu subset (Opus 111, TWCC/MID, NACK/PLI)
+and the H.264 vs VP8/VP9/AV1 gap.
 
 ## Security and network scope
 

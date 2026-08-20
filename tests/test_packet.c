@@ -29,6 +29,18 @@ int main(void) {
   assert(memcmp(output.data, payload, sizeof(payload)) == 0);
   wire[0] = 0;
   assert(mezon_rtp_parse(wire, wire_len, &output) == MEZON_ERR_UNSUPPORTED);
+
+  {
+    uint8_t ext_wire[] = {
+        0x90, 0x6f, 0x00, 0x07, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88,
+        0xbe, 0xde, 0x00, 0x01, 0x10, 0x30, 0x00, 0x00, 0xaa, 0xbb};
+    assert(mezon_rtp_parse(ext_wire, sizeof(ext_wire), &output) == MEZON_OK);
+    assert(output.payload_type == 111);
+    assert(output.seq == 7);
+    assert(output.len == 2);
+    assert(output.data[0] == 0xaa && output.data[1] == 0xbb);
+  }
+
   assert(mezon_seq_before(65535, 0));
   return 0;
 }

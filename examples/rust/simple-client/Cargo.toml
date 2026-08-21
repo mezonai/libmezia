@@ -1,0 +1,13 @@
+[package]
+name = "simple-client"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "simple-client"
+path = "src/main.rs"
+
+[dependencies]
+mezia = { path = "../mezia" }

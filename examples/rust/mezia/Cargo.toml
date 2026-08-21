@@ -1,0 +1,10 @@
+[package]
+name = "mezia"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+mezia-sys = { path = "../mezia-sys" }
+thiserror = "1.0"

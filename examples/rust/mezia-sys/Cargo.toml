@@ -1,0 +1,11 @@
+[package]
+name = "mezia-sys"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+
+[build-dependencies]
+cc = "1.0"
